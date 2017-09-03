@@ -47,24 +47,32 @@ public:
   using Graph = SemistaticGraph<TypeId, NormalizedBinding>;
   
   template <typename AnnotatedT>
-  using RemoveAnnotations = fruit::impl::meta::UnwrapType<fruit::impl::meta::Eval<
-      fruit::impl::meta::RemoveAnnotations(fruit::impl::meta::Type<AnnotatedT>)
-      >>;
+  struct RemoveAnnotations {
+	  using type = fruit::impl::meta::UnwrapType<fruit::impl::meta::Eval<
+		  fruit::impl::meta::RemoveAnnotations(fruit::impl::meta::Type<AnnotatedT>)
+		  >>;
+  };
   
   template <typename T>
-  using NormalizeType = fruit::impl::meta::UnwrapType<fruit::impl::meta::Eval<
-      fruit::impl::meta::NormalizeType(fruit::impl::meta::Type<T>)
-      >>;
-  
+  struct NormalizeType {
+	  using type = fruit::impl::meta::UnwrapType<fruit::impl::meta::Eval<
+		  fruit::impl::meta::NormalizeType(fruit::impl::meta::Type<T>)
+		  >>;
+  };
+
   template <typename Signature>
-  using SignatureType = fruit::impl::meta::UnwrapType<fruit::impl::meta::Eval<
-      fruit::impl::meta::SignatureType(fruit::impl::meta::Type<Signature>)
-      >>;
-      
+  struct SignatureType {
+	  using type = fruit::impl::meta::UnwrapType<fruit::impl::meta::Eval<
+		  fruit::impl::meta::SignatureType(fruit::impl::meta::Type<Signature>)
+		  >>;
+  };
+
   template <typename Signature>
-  using NormalizedSignatureArgs = fruit::impl::meta::Eval<
-      fruit::impl::meta::NormalizeTypeVector(fruit::impl::meta::SignatureArgs(fruit::impl::meta::Type<Signature>))
-      >;
+  struct NormalizedSignatureArgs {
+	  using type = fruit::impl::meta::Eval<
+		  fruit::impl::meta::NormalizeTypeVector(fruit::impl::meta::SignatureArgs(fruit::impl::meta::Type<Signature>))
+	  >;
+  };
   
   // Prints the specified error and calls exit(1).
   static void fatal(const std::string& error);
@@ -242,7 +250,7 @@ public:
   // Usually get<T>() returns a T.
   // However, get<Annotated<Annotation1, T>>() returns a T, not an Annotated<Annotation1, T>.
   template <typename AnnotatedT>
-  RemoveAnnotations<AnnotatedT> get();
+  typename RemoveAnnotations<AnnotatedT>::type get();
   
   // Similar to the above, but specifying the node_iterator of the type. Use this together with lazyGetPtr when the node_iterator is known, it's faster.
   // Note that T should *not* be annotated.
@@ -258,10 +266,10 @@ public:
   
   // Returns nullptr if AnnotatedC was not bound.
   template <typename AnnotatedC>
-  const RemoveAnnotations<AnnotatedC>* unsafeGet();
+  const typename RemoveAnnotations<AnnotatedC>::type* unsafeGet();
   
   template <typename AnnotatedC>
-  const std::vector<RemoveAnnotations<AnnotatedC>*>& getMultibindings();
+  const std::vector<typename RemoveAnnotations<AnnotatedC>::type*>& getMultibindings();
   
   void eagerlyInjectMultibindings();
 };

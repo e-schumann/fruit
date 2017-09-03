@@ -47,15 +47,12 @@ template <typename... P>
 class Injector {
 private:
   template <typename T>
-  struct RemoveAnnotationsHelper {
+  struct RemoveAnnotations {
     using type = fruit::impl::meta::UnwrapType<fruit::impl::meta::Eval<
         fruit::impl::meta::RemoveAnnotations(fruit::impl::meta::Type<T>)
         >>;
   };
 
-  template <typename T>
-  using RemoveAnnotations = typename RemoveAnnotationsHelper<T>::type;
-  
 public:
   // Moving injectors is allowed.
   Injector(Injector&&) = default;
@@ -175,7 +172,7 @@ public:
    * Calling get<> repeatedly for the same class with the same injector will return the same instance.
    */
   template <typename T>
-  RemoveAnnotations<T> get();
+  typename RemoveAnnotations<T>::type get();
   
   /**
    * This is a convenient way to call get(). E.g.:
@@ -208,7 +205,7 @@ public:
    * With an annotated parameter AnnotatedT=Annotated<Annotation, T>, this returns a const std::vector<T*>&.
    */
   template <typename T>
-  const std::vector<RemoveAnnotations<T>*>& getMultibindings();
+  const std::vector<typename RemoveAnnotations<T>::type*>& getMultibindings();
   
   /**
    * Eagerly injects all reachable bindings and multibindings of this injector.

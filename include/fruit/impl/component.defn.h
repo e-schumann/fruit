@@ -292,8 +292,8 @@ PartialComponent<Bindings...>::install(fruit::Component<OtherComponentParams...>
 
 template <typename... Bindings>
 template <typename... OtherComponentParams, typename... FormalArgs, typename... Args>
-inline PartialComponent<Bindings...>::PartialComponentWithReplacementInProgress<fruit::Component<OtherComponentParams...>, FormalArgs...>
-PartialComponent<Bindings...>::replace(fruit::Component<OtherComponentParams...>(*getReplacedComponent)(FormalArgs...), Args&&... args) {
+inline auto
+PartialComponent<Bindings...>::replace(fruit::Component<OtherComponentParams...>(*getReplacedComponent)(FormalArgs...), Args&&... args) -> PartialComponentWithReplacementInProgress<fruit::Component<OtherComponentParams...>, FormalArgs...>{
   using IntCollector = int[];
   (void)IntCollector{0, checkAcceptableComponentInstallArg<FormalArgs>()...};
 
