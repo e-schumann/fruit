@@ -19,23 +19,49 @@ import unittest
 import textwrap
 import re
 import sys
+import shlex
 
 import itertools
 
 import subprocess
 
-import pytest
+from absl.testing import parameterized
 
 from fruit_test_config import *
 
+from absl.testing import absltest
+
 run_under_valgrind = RUN_TESTS_UNDER_VALGRIND.lower() not in ('false', 'off', 'no', '0', '')
 
-def pretty_print_command(command):
-    return ' '.join('"' + x + '"' for x in command)
+def pretty_print_command(command, env):
+    return 'cd %s; env -i %s %s' % (
+        shlex.quote(env['PWD']),
+        ' '.join('%s=%s' % (var_name, shlex.quote(value)) for var_name, value in env.items() if var_name != 'PWD'),
+        ' '.join(shlex.quote(x) for x in command))
+
+def multiple_parameters(*param_lists):
+    param_lists = [[params if isinstance(params, tuple) else (params,)
+                    for params in param_list]
+                   for param_list in param_lists]
+    result = param_lists[0]
+    for param_list in param_lists[1:]:
+        result = [(*args1, *args2)
+                  for args1 in result
+                  for args2 in param_list]
+    return parameterized.parameters(*result)
+
+def multiple_named_parameters(*param_lists):
+    result = param_lists[0]
+    for param_list in param_lists[1:]:
+        result = [(name1 + ', ' + name2, *args1, *args2)
+                  for name1, *args1 in result
+                  for name2, *args2 in param_list]
+    return parameterized.named_parameters(*result)
 
 class CommandFailedException(Exception):
-    def __init__(self, command, stdout, stderr, error_code):
+    def __init__(self, command, env, stdout, stderr, error_code):
         self.command = command
+        self.env = env
         self.stdout = stdout
         self.stderr = stderr
         self.error_code = error_code
@@ -49,19 +75,19 @@ class CommandFailedException(Exception):
 
         Stderr:
         {stderr}
-        ''').format(command=pretty_print_command(self.command), error_code=self.error_code, stdout=self.stdout, stderr=self.stderr)
+        ''').format(command=pretty_print_command(self.command, self.env), error_code=self.error_code, stdout=self.stdout, stderr=self.stderr)
 
 def run_command(executable, args=[], modify_env=lambda env: env):
     command = [executable] + args
     modified_env = modify_env(os.environ)
-    print('Executing command:', pretty_print_command(command))
+    print('Executing command:', pretty_print_command(command, modified_env))
     try:
         p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, env=modified_env)
         (stdout, stderr) = p.communicate()
     except Exception as e:
         raise Exception("While executing: %s" % command)
     if p.returncode != 0:
-        raise CommandFailedException(command, stdout, stderr, p.returncode)
+        raise CommandFailedException(command, modified_env, stdout, stderr, p.returncode)
     print('Execution successful.')
     print('stdout:')
     print(stdout)
@@ -79,8 +105,9 @@ def run_compiled_executable(executable):
         run_command(executable, modify_env = modify_env_for_compiled_executables)
 
 class CompilationFailedException(Exception):
-    def __init__(self, command, error_message):
+    def __init__(self, command, env, error_message):
         self.command = command
+        self.env = env
         self.error_message = error_message
 
     def __str__(self):
@@ -88,7 +115,7 @@ class CompilationFailedException(Exception):
         Ran command: {command}
         Error message:
         {error_message}
-        ''').format(command=pretty_print_command(self.command), error_message=self.error_message)
+        ''').format(command=pretty_print_command(self.command, self.env), error_message=self.error_message)
 
 class PosixCompiler:
     def __init__(self):
@@ -100,7 +127,7 @@ class PosixCompiler:
             args = args + ['-c', source, '-o', os.path.devnull]
             self._compile(include_dirs, args=args)
         except CommandFailedException as e:
-            raise CompilationFailedException(e.command, e.stderr)
+            raise CompilationFailedException(e.command, e.env, e.stderr)
 
     def compile_and_link(self, source, include_dirs, output_file_name, args=[]):
         self._compile(
@@ -234,6 +261,11 @@ def try_remove_temporary_file(filename):
         # This shouldn't cause the tests to fail, so we ignore the exception and go ahead.
         pass
 
+def normalize_error_message_lines(lines):
+    # Different compilers output a different number of spaces when pretty-printing types.
+    # When using libc++, sometimes std::foo identifiers are reported as std::__1::foo.
+    return [line.replace(' ', '').replace('std::__1::', 'std::') for line in lines]
+
 def expect_compile_error_helper(
         check_error_fun,
         setup_source_code,
@@ -266,15 +298,43 @@ def expect_compile_error_helper(
 
     error_message = e.error_message
     error_message_lines = error_message.splitlines()
-    # Different compilers output a different number of spaces when pretty-printing types.
-    # When using libc++, sometimes std::foo identifiers are reported as std::__1::foo.
-    normalized_error_message = error_message.replace(' ', '').replace('std::__1::', 'std::')
-    normalized_error_message_lines = normalized_error_message.splitlines()
+    error_message_lines = error_message.splitlines()
     error_message_head = _cap_to_lines(error_message, 40)
 
-    check_error_fun(e, error_message_lines, error_message_head, normalized_error_message_lines)
+    check_error_fun(e, error_message_lines, error_message_head)
 
     try_remove_temporary_file(source_file_name)
+
+def apply_any_error_context_replacements(error_string, following_lines):
+    if CXX_COMPILER_NAME == 'MSVC':
+        # MSVC errors are of the form:
+        #
+        # C:\Path\To\header\foo.h(59): note: see reference to class template instantiation 'fruit::impl::NoBindingFoundError<fruit::Annotated<Annotation,U>>' being compiled
+        #         with
+        #         [
+        #              Annotation=Annotation1,
+        #              U=std::function<std::unique_ptr<ScalerImpl,std::default_delete<ScalerImpl>> (double)>
+        #         ]
+        #
+        # So we need to parse the following few lines and use them to replace the placeholder types in the Fruit error type.
+        replacement_lines = []
+        if len(following_lines) >= 4 and following_lines[0].strip() == 'with':
+            assert following_lines[1].strip() == '[', 'Line was: ' + following_lines[1]
+            for line in itertools.islice(following_lines, 2, None):
+                line = line.strip()
+                if line == ']':
+                    break
+                if line.endswith(','):
+                    line = line[:-1]
+                replacement_lines.append(line)
+
+        for replacement_line in replacement_lines:
+            match = re.search('([A-Za-z0-9_-]*)=(.*)', replacement_line)
+            if not match:
+                raise Exception('Failed to parse replacement line: %s' % replacement_line)
+            (type_variable, type_expression) = match.groups()
+            error_string = re.sub(r'\b' + type_variable + r'\b', type_expression, error_string)
+    return error_string
 
 def expect_generic_compile_error(expected_error_regex, setup_source_code, source_code, test_params={}):
     """
@@ -297,7 +357,13 @@ def expect_generic_compile_error(expected_error_regex, setup_source_code, source
     expected_error_regex = _replace_using_test_params(expected_error_regex, test_params)
     expected_error_regex = expected_error_regex.replace(' ', '')
 
-    def check_error(e, error_message_lines, error_message_head, normalized_error_message_lines):
+    def check_error(e, error_message_lines, error_message_head):
+        error_message_lines_with_replacements = [
+            apply_any_error_context_replacements(line, error_message_lines[line_number + 1:])
+            for line_number, line in enumerate(error_message_lines)]
+
+        normalized_error_message_lines = normalize_error_message_lines(error_message_lines_with_replacements)
+
         for line in normalized_error_message_lines:
             if re.search(expected_error_regex, line):
                 return
@@ -309,7 +375,6 @@ def expect_generic_compile_error(expected_error_regex, setup_source_code, source
             ''').format(expected_error = expected_error_regex, compiler_command=e.command, error_message = error_message_head))
 
     expect_compile_error_helper(check_error, setup_source_code, source_code, test_params)
-
 
 def expect_compile_error(
         expected_fruit_error_regex,
@@ -348,41 +413,15 @@ def expect_compile_error(
     expected_fruit_error_regex = _replace_using_test_params(expected_fruit_error_regex, test_params)
     expected_fruit_error_regex = expected_fruit_error_regex.replace(' ', '')
 
-    def check_error(e, error_message_lines, error_message_head, normalized_error_message_lines):
+    def check_error(e, error_message_lines, error_message_head):
+        normalized_error_message_lines = normalize_error_message_lines(error_message_lines)
+
         for line_number, line in enumerate(normalized_error_message_lines):
             match = re.search('fruit::impl::(.*Error<.*>)', line)
             if match:
                 actual_fruit_error_line_number = line_number
                 actual_fruit_error = match.groups()[0]
-                if CXX_COMPILER_NAME == 'MSVC':
-                    # MSVC errors are of the form:
-                    #
-                    # C:\Path\To\header\foo.h(59): note: see reference to class template instantiation 'fruit::impl::NoBindingFoundError<fruit::Annotated<Annotation,U>>' being compiled
-                    #         with
-                    #         [
-                    #              Annotation=Annotation1,
-                    #              U=std::function<std::unique_ptr<ScalerImpl,std::default_delete<ScalerImpl>> (double)>
-                    #         ]
-                    #
-                    # So we need to parse the following few lines and use them to replace the placeholder types in the Fruit error type.
-                    try:
-                        replacement_lines = []
-                        if normalized_error_message_lines[line_number + 1].strip() == 'with':
-                            for line in itertools.islice(normalized_error_message_lines, line_number + 3, None):
-                                line = line.strip()
-                                if line == ']':
-                                    break
-                                if line.endswith(','):
-                                    line = line[:-1]
-                                replacement_lines.append(line)
-                        for replacement_line in replacement_lines:
-                            match = re.search('([A-Za-z0-9_-]*)=(.*)', replacement_line)
-                            if not match:
-                                raise Exception('Failed to parse replacement line: %s' % replacement_line) from e
-                            (type_variable, type_expression) = match.groups()
-                            actual_fruit_error = re.sub(r'\b' + type_variable + r'\b', type_expression, actual_fruit_error)
-                    except Exception:
-                        raise Exception('Failed to parse MSVC template type arguments')
+                actual_fruit_error = apply_any_error_context_replacements(actual_fruit_error, normalized_error_message_lines[line_number + 1:])
                 break
         else:
             raise Exception(textwrap.dedent('''\
@@ -575,6 +614,5 @@ def expect_success(setup_source_code, source_code, test_params={}, ignore_deprec
 
 
 # Note: this is not the main function of this file, it's meant to be used as main function from test_*.py files.
-def main(file):
-    code = pytest.main(args = sys.argv + [os.path.realpath(file)])
-    exit(code)
+def main():
+    absltest.main(*sys.argv)

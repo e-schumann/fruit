@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from absl.testing import parameterized
 from fruit_test_common import *
 
 COMMON_DEFINITIONS = '''
-    #define IN_FRUIT_CPP_FILE
+    #define IN_FRUIT_CPP_FILE 1
     
     #include "meta/common.h"
     #include <fruit/impl/meta/component.h>
@@ -28,19 +29,20 @@ COMMON_DEFINITIONS = '''
     using B = Type<B1>;
     '''
 
-def test_GetNthType():
-    source = '''
-        int main() {
-          AssertSameType(A, GetNthType(Int<0>, Vector<A>));
-          
-          AssertSameType(A, GetNthType(Int<0>, Vector<A, B>));
-          AssertSameType(B, GetNthType(Int<1>, Vector<A, B>));
-        }
-        '''
-    expect_success(
-        COMMON_DEFINITIONS,
-        source,
-        locals())
+class TestMetaprogramming(parameterized.TestCase):
+    def test_GetNthType(self):
+        source = '''
+            int main() {
+              AssertSameType(A, GetNthType(Int<0>, Vector<A>));
+              
+              AssertSameType(A, GetNthType(Int<0>, Vector<A, B>));
+              AssertSameType(B, GetNthType(Int<1>, Vector<A, B>));
+            }
+            '''
+        expect_success(
+            COMMON_DEFINITIONS,
+            source,
+            locals())
 
-if __name__== '__main__':
-    main(__file__)
+if __name__ == '__main__':
+    absltest.main()
